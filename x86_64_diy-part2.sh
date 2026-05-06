@@ -13,38 +13,51 @@ replace_package() {
     fi
 }
 
-# 2. 执行批量替换操作
-replace_package "feeds/kenzok8/mosdns" "feeds/packages/net/mosdns"
+# === 彻底清理既有的 MosDNS 相关路径 ===
+echo "Purging existing MosDNS files from feeds..."
+rm -rf feeds/kenzok8/mosdns
+rm -rf feeds/kenzok8/luci-app-mosdns
+rm -rf feeds/packages/net/mosdns
+rm -rf feeds/packages/net/v2ray-geodata
+
+# === 准备 Golang 环境 (编译 MosDNS v5 必须使用新版 Go) ===
+echo "Updating Golang to 26.x..."
+rm -rf feeds/packages/lang/golang
+git clone --depth 1 https://github.com/sbwml/packages_lang_golang -b 26.x feeds/packages/lang/golang
+
+# === 拉取 sbwml 版 MosDNS v5 (直接放入 package 目录) ===
+echo "Cloning sbwml MosDNS v5 and geodata to /package..."
+rm -rf package/mosdns
+rm -rf package/v2ray-geodata
+git clone --depth 1 https://github.com/sbwml/luci-app-mosdns -b v5 package/mosdns
+git clone --depth 1 https://github.com/sbwml/v2ray-geodata package/v2ray-geodata
+
+# 2. 执行其他软件包替换操作
 replace_package "feeds/kenzok8/adguardhome" "feeds/packages/net/adguardhome"
 replace_package "feeds/kenzok8/luci-app-adguardhome" "feeds/luci/applications/luci-app-adguardhome"
 replace_package "feeds/kenzok8/luci-app-openclash" "feeds/luci/applications/luci-app-openclash"
 
-# === 新增：处理 Lucky 相关软件包 ===
-echo "Updating Lucky and Luci-app-lucky from coolsnowwolf..."
-# 删除旧的 kenzok8 中的 lucky 相关包
+# === 处理 Lucky 相关软件包 ===
+echo "Updating Lucky and Luci-app-lucky..."
 rm -rf feeds/kenzok8/lucky
 rm -rf feeds/kenzok8/luci-app-lucky
 
-# 临时克隆 Lean 的 packages 仓库 (master 分支) 获取 lucky
 git clone --depth 1 -b master https://github.com/coolsnowwolf/packages /tmp/lean_packages
 if [ -d "/tmp/lean_packages/net/lucky" ]; then
     cp -r /tmp/lean_packages/net/lucky feeds/kenzok8/lucky
     echo "Lucky core updated."
 fi
 
-# 临时克隆 Lean 的 luci 仓库 (openwrt-25.12 分支) 获取 luci-app-lucky
 git clone --depth 1 -b openwrt-25.12 https://github.com/coolsnowwolf/luci /tmp/lean_luci
 if [ -d "/tmp/lean_luci/applications/luci-app-lucky" ]; then
     cp -r /tmp/lean_luci/applications/luci-app-lucky feeds/kenzok8/luci-app-lucky
     echo "Luci-app-lucky updated."
 fi
 
-# 清理临时拉取的目录
 rm -rf /tmp/lean_packages
 rm -rf /tmp/lean_luci
-# =================================
 
-# 特殊处理：AdGuardHome Makefile 权限修复
+# 权限修复
 AGH_MAKEFILE="feeds/luci/applications/luci-app-adguardhome/Makefile"
 if [ -f "$AGH_MAKEFILE" ]; then
     sed -i '/\/etc\/init.d\/AdGuardHome enable/i \	chmod 755 /usr/share/AdGuardHome/*' "$AGH_MAKEFILE"
@@ -53,7 +66,7 @@ if [ -f "$AGH_MAKEFILE" ]; then
 fi
 
 # 3. 预集成 OpenClash Meta 核心
-echo "Downloading OpenClash Meta core..."
+echo "Integrating OpenClash Meta core..."
 CORE_URL="https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64-v1.tar.gz"
 CORE_PATH="feeds/luci/applications/luci-app-openclash/root/etc/openclash/core"
 
@@ -65,16 +78,14 @@ if [ -f "/tmp/clash.tar.gz" ]; then
     chmod +x /tmp/clash
     mv /tmp/clash "$CORE_PATH/clash_meta"
     rm -rf /tmp/clash.tar.gz
-    echo "OpenClash Meta core integrated successfully."
-else
-    echo "Error: Failed to download OpenClash core!"
+    echo "OpenClash Meta core ready."
 fi
 
-# 4. 修改默认 IP、主机名
+# 4. 修改默认 IP
 find package/base-files/ -name "config_generate" | xargs sed -i 's/192.168.1.1/192.168.13.254/g'
 
 # 5. 修改默认主题
 sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' feeds/luci/collections/luci-light/Makefile
 sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' feeds/luci/collections/luci-nginx/Makefile
 
-echo "All modifications completed!"
+echo "All tasks completed!"

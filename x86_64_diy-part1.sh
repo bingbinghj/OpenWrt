@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 #
 # https://github.com/P3TERX/Actions-OpenWrt
 # File name: diy-part1.sh
@@ -18,4 +19,6 @@
 #echo 'src-git passwall https://github.com/xiaorouji/openwrt-passwall' >>feeds.conf.default
 
 #small-package
-echo 'src-git kenzok8 https://github.com/kenzok8/small-package.git' >> feeds.conf.default
+if ! grep -qE '^src-git(-full)?[[:space:]]+kenzok8[[:space:]]' feeds.conf.default; then
+    echo 'src-git kenzok8 https://github.com/kenzok8/small-package.git' >> feeds.conf.default
+fi

@@ -1,0 +1,8 @@
+.work/
+__pycache__/
+*.pyc
+openwrt/
+logs/
+firmware/
+release.md
+build-info.json

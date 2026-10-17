@@ -1,59 +1,51 @@
-#
-# https://github.com/P3TERX/Actions-OpenWrt
-#
-# File: .github/workflows/update-checker.yml
-# Description: Source code update checker
-#
-# Copyright (c) 2019-2024 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
-#
-
 name: Update Checker
-
-env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: 0 */18 * * *
+    - cron: '0 */18 * * *'
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: immortalwrt-update-checker
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   check:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Get Commit Hash
-      id: getHash
-      run: |
-        git clone --depth 1 $REPO_URL -b $REPO_BRANCH .
-        echo "commitHash=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+      - name: Load shared upstream settings
+        run: cat .github/upstream.env >> "$GITHUB_ENV"
 
-    - name: Compare Commit Hash
-      id: cacheHash
-      uses: actions/cache@v3
-      with:
-        path: .commitHash
-        key: commitHash_${{ steps.getHash.outputs.commitHash }}
+      - name: Compare with last published firmware
+        id: upstream
+        # A failed build never advances the baseline; the next check retries it.
+        run: python3 scripts/upstream_release.py check
 
-    - name: Save New Commit Hash
-      if: steps.cacheHash.outputs.cache-hit != 'true'
-      run: |
-        echo ${{ steps.getHash.outputs.commitHash }} | tee .commitHash
-
-    - name: Trigger build
-      if: steps.cacheHash.outputs.cache-hit != 'true'
-      uses: peter-evans/repository-dispatch@v2
-      with:
-        token: ${{ secrets.ACTIONS_TRIGGER_PAT }}
-        event-type: Source Code Update
-
-    - name: Delete workflow runs
-      uses: Mattraks/delete-workflow-runs@v2
-      with:
-        retain_days: 0
-        keep_minimum_runs: 2
+      - name: Trigger build when idle
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          UPSTREAM_COMMIT: ${{ steps.upstream.outputs.upstream_commit }}
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow x86_64.yml \
+            --limit 100 --json status --jq '[.[] | select(.status != "completed")] | length')
+          if [[ "$active" != 0 ]]; then
+            echo 'An existing firmware build is active; defer until the next check.'
+            exit 0
+          fi
+          gh workflow run x86_64.yml --repo "$GITHUB_REPOSITORY" --ref "$WORKFLOW_REF" \
+            -f "upstream_commit=$UPSTREAM_COMMIT"

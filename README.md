@@ -7,6 +7,7 @@
 - 手动执行 `x86_64` 时，可以留空 `upstream_commit` 编译配置分支的最新版本，或填写该分支历史中的完整 40 位 SHA。
 - 工作流使用内置 `GITHUB_TOKEN`：构建工作流声明 `contents: write`，检查工作流声明 `actions: write`。不再依赖 `ACTIONS_TRIGGER_PAT`。仓库或组织策略需要允许这两项权限。
 - 包定制后重新建立 feeds 索引再安装；下载和编译失败时各进行一次单线程详细重试。日志 artifact 保留 14 天，固件 artifact 保留 7 天。
+- `x86_64_diy-part2.sh` 在替换 OpenClash 软件包后修补其启动脚本：`del_cron()` 使用 `crontab "$CRON_FILE"` 重新加载任务，避免定时订阅更新重启 cron 时终止自身的 OpenClash 重启流程。已包含此修复的上游保持原样；文件缺失或函数不匹配会使定制阶段失败，防止静默生成未修复的固件。
 - 只有成功生成固件镜像才会发布。先上传至草稿 Release，再公开；之后保留最近 3 个由新脚本管理的正式固件 Release。旧版、手工发布、预发布和草稿不参与自动清理，Git 标签保留。
 
 ## Release 会写明什么

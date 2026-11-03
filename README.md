@@ -8,7 +8,7 @@
 - 工作流使用内置 `GITHUB_TOKEN`：构建工作流声明 `contents: write`，检查工作流声明 `actions: write`。不再依赖 `ACTIONS_TRIGGER_PAT`。仓库或组织策略需要允许这两项权限。
 - 包定制后重新建立 feeds 索引再安装；下载和编译失败时各进行一次单线程详细重试。日志 artifact 保留 14 天，固件 artifact 保留 7 天。
 - `x86_64_diy-part2.sh` 在替换 OpenClash 软件包后修补其启动脚本：`del_cron()` 使用 `crontab "$CRON_FILE"` 重新加载任务，避免定时订阅更新重启 cron 时终止自身的 OpenClash 重启流程。已包含此修复的上游保持原样；文件缺失或函数不匹配会使定制阶段失败，防止静默生成未修复的固件。
-- 每次构建都会重新查询 Lucky、EasyTier 官方 GitHub 的最新稳定 Release，选取 Linux x86-64 核心，把官方 SHA256 写入 OpenWrt 下载配方；获取版本、资产或校验失败时停止构建，不回退旧核心。Lucky 使用官方普通版，EasyTier 使用静态核心及同版本 CLI，按现有选项包含 Web 控制台。配置显式选入 `easytier`，避免只安装 LuCI 页面而遗漏核心。
+- 每次构建都会重新查询 Lucky、EasyTier 官方 GitHub 的最新稳定 Release，选取 Linux x86-64 核心，把官方 SHA256 写入 OpenWrt 下载配方；获取版本、资产或校验失败时停止构建，不回退旧核心。Lucky 使用官方普通版；EasyTier 保留 LuCI 插件，预装静态 `easytier-core` 和供插件查询状态使用的同版本 CLI，关闭 `EASYTIER_INCLUDE_WEBCONSOLE`，不安装独立 Web 控制台。配置只选入一份 `easytier` 核心包。
 - 本次构建确定的 Lucky、EasyTier Release 标签和归档 SHA256 会写入 `custom-sources.json`，并出现在发布附件 `build-info.json` 的组件记录中。下次构建重新查询最新稳定版本，当前编译过程中保持已选版本和哈希一致。
 - 保留配置升级时，请避免在自定义保留列表加入整个 `/etc` 或 `/etc/init.d/openclash`、`/etc/init.d/mosdns`；旧启动脚本可能覆盖新固件的修复。按默认规则保留设置，并补充实际插件数据目录，例如 `/etc/lucky/`、`/etc/AdGuardHome.yaml`、`/etc/AdGuardHome/` 和自定义 MosDNS YAML。构建仅修改打包源文件，不增加升级后恢复脚本的机制。
 - 只有成功生成固件镜像才会发布。先上传至草稿 Release，再公开；之后保留最近 3 个由新脚本管理的正式固件 Release。旧版、手工发布、预发布和草稿不参与自动清理，Git 标签保留。

@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+CUSTOM_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
 CUSTOM_TMP=$(mktemp -d)
 trap 'rm -rf -- "$CUSTOM_TMP"' EXIT
 trap 'echo "::error file=x86_64_diy-part2.sh,line=$LINENO::Package customization failed"' ERR
@@ -92,6 +94,13 @@ replace_package "$CUSTOM_TMP/lean_luci/applications/luci-app-lucky" feeds/kenzok
 printf '{"coolsnowwolf/packages (lucky)":"%s","coolsnowwolf/luci (lucky)":"%s"}\n' \
     "$(git -C "$CUSTOM_TMP/lean_packages" rev-parse HEAD)" \
     "$(git -C "$CUSTOM_TMP/lean_luci" rev-parse HEAD)" > custom-sources.json
+
+# 每次构建重新查询官方最新稳定版，下载阶段按官方 SHA256 校验。
+python3 "$CUSTOM_SCRIPT_DIR/scripts/update_lucky.py" \
+    --package feeds/kenzok8/lucky --provenance custom-sources.json
+
+python3 "$CUSTOM_SCRIPT_DIR/scripts/update_easytier.py" \
+    --source-root . --provenance custom-sources.json
 
 # 权限修复
 AGH_MAKEFILE="feeds/luci/applications/luci-app-adguardhome/Makefile"

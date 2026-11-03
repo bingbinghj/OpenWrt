@@ -48,7 +48,7 @@ jobs:
 
       - name: Validate release and customization scripts
         run: |
-          python3 -m unittest discover -s tests -p test_upstream_release.py -v
+          python3 -m unittest discover -s tests -p 'test_*release.py' -v
           bash -n x86_64_diy-part1.sh
           bash -n x86_64_diy-part2.sh
           bash tests/test_customization.sh
@@ -97,6 +97,8 @@ jobs:
           ./scripts/feeds update -a 2>&1 | tee "$GITHUB_WORKSPACE/logs/feeds-update.log"
 
       - name: Customize packages and configuration
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ -d files ]]; then cp -a files openwrt/; fi
           cp "$CONFIG_FILE" openwrt/.config

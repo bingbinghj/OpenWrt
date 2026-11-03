@@ -7,7 +7,19 @@ trap 'rm -rf -- "$FIXTURE"' EXIT
 mkdir -p "$FIXTURE/bin" "$FIXTURE/archive"
 printf 'fixture core\n' > "$FIXTURE/archive/clash"
 tar -czf "$FIXTURE/core.tar.gz" -C "$FIXTURE/archive" clash
-export FIXTURE
+export FIXTURE ROOT
+CUSTOM_REAL_PYTHON=$(command -v python3)
+export CUSTOM_REAL_PYTHON
+
+cat > "$FIXTURE/bin/python3" <<'MOCK'
+#!/bin/bash
+set -eu
+case "${1:-}" in
+    */scripts/update_lucky.py|*/scripts/update_easytier.py)
+        exec "$CUSTOM_REAL_PYTHON" "$ROOT/tests/mock_release_build.py" run "$@" ;;
+    *) exec "$CUSTOM_REAL_PYTHON" "$@" ;;
+esac
+MOCK
 
 cat > "$FIXTURE/bin/git" <<'MOCK'
 #!/bin/bash
@@ -19,7 +31,9 @@ if [[ "$*" == *packages_lang_golang* ]]; then
     [[ "$*" == *'27.x'* ]] || exit 32
 fi
 mkdir -p "$destination"
-if [[ "$*" == *coolsnowwolf/packages* ]]; then mkdir -p "$destination/net/lucky"; fi
+if [[ "$*" == *coolsnowwolf/packages* ]]; then
+    python3 "$ROOT/tests/mock_release_build.py" prepare-lucky "$destination/net/lucky"
+fi
 if [[ "$*" == *coolsnowwolf/luci* ]]; then mkdir -p "$destination/applications/luci-app-lucky"; fi
 MOCK
 cat > "$FIXTURE/bin/curl" <<'MOCK'
@@ -32,7 +46,7 @@ while [[ $# -gt 0 ]]; do
 done
 exit 1
 MOCK
-chmod +x "$FIXTURE/bin/git" "$FIXTURE/bin/curl"
+chmod +x "$FIXTURE/bin/git" "$FIXTURE/bin/curl" "$FIXTURE/bin/python3"
 export PATH="$FIXTURE/bin:$PATH"
 
 prepare() {
@@ -57,6 +71,7 @@ del_cron()
 } >/dev/null 2>&1
 INIT
     chmod 755 feeds/kenzok8/luci-app-openclash/root/etc/init.d/openclash
+    python3 "$ROOT/tests/mock_release_build.py" prepare-packages feeds/kenzok8
     printf 'src-git packages https://example.invalid/packages\n' > feeds.conf.default
     printf 'luci-theme-bootstrap\n' > feeds/luci/collections/luci-light/Makefile
     printf 'luci-theme-bootstrap\n' > feeds/luci/collections/luci-nginx/Makefile
@@ -89,6 +104,13 @@ printf '0 2 * * * mosdns-update\n0 6 * * 1 subscription #openclash-cron-task\n0 
 [[ $(cat "$CRON_FILE") == '0 2 * * * mosdns-update' ]]
 test -s feeds/luci/applications/luci-app-openclash/root/etc/openclash/core/clash_meta
 test -s custom-sources.json
+grep -q '^PKG_VERSION:=3.5.0$' feeds/kenzok8/lucky/Makefile
+grep -q '^PKG_HASH:=' feeds/kenzok8/lucky/Makefile
+! grep -q 'wget' feeds/kenzok8/lucky/Makefile
+grep -q '^PKG_VERSION:=2.6.4$' feeds/kenzok8/easytier/Makefile
+grep -q 'gdy666/lucky (release)' custom-sources.json
+grep -q 'EasyTier/EasyTier (release)' custom-sources.json
+test -s dl/easytier-linux-x86_64-v2.6.4.zip
 ! grep -qF '$(eval $(call BuildPackage,luci-app-adguardhome))' feeds/luci/applications/luci-app-adguardhome/Makefile
 grep -q '192.168.13.254' package/base-files/config_generate
 
@@ -146,4 +168,11 @@ if FAIL_DOWNLOAD=1 bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/download.log" 2>
     echo 'Download failure was ignored' >&2; exit 1
 fi
 ! grep -q 'OpenClash Meta core ready' "$FIXTURE/download.log"
-echo 'Customization integration checks passed (cron reload, already-fixed, CRLF, missing/incompatible/mixed init, clone/download failures).'
+
+prepare "$FIXTURE/release-failure"
+if FAIL_RELEASE=1 bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/release.log" 2>&1; then
+    echo 'Latest stable API failure was ignored' >&2; exit 1
+fi
+grep -q 'refusing an old-core fallback' "$FIXTURE/release.log"
+! grep -q 'All tasks completed' "$FIXTURE/release.log"
+echo 'Customization integration checks passed (cron reload, stable Lucky/EasyTier, incompatible init and clone/download/API failures).'

@@ -7,6 +7,8 @@ CUSTOM_TMP=$(mktemp -d)
 trap 'rm -rf -- "$CUSTOM_TMP"' EXIT
 trap 'echo "::error file=x86_64_diy-part2.sh,line=$LINENO::Package customization failed"' ERR
 
+printf '{}\n' > custom-sources.json
+
 # 1. 定义软件包替换函数
 replace_package() {
     local src=$1
@@ -45,6 +47,10 @@ git clone --depth 1 https://github.com/sbwml/v2ray-geodata package/v2ray-geodata
 replace_package "feeds/kenzok8/adguardhome" "feeds/packages/net/adguardhome"
 replace_package "feeds/kenzok8/luci-app-adguardhome" "feeds/luci/applications/luci-app-adguardhome"
 replace_package "feeds/kenzok8/luci-app-openclash" "feeds/luci/applications/luci-app-openclash"
+
+python3 "$CUSTOM_SCRIPT_DIR/scripts/update_openclash.py" \
+    --package feeds/luci/applications/luci-app-openclash \
+    --provenance custom-sources.json --download-dir dl
 
 # 仅重新加载任务表，避免 cron 发起的 OpenClash 重启杀掉自己的 cgroup。
 # 修补复制后的打包源文件；已修复的上游保持原样，不匹配时停止编译。
@@ -90,10 +96,22 @@ replace_package "$CUSTOM_TMP/lean_packages/net/lucky" feeds/kenzok8/lucky
 git clone --depth 1 -b openwrt-25.12 https://github.com/coolsnowwolf/luci "$CUSTOM_TMP/lean_luci"
 replace_package "$CUSTOM_TMP/lean_luci/applications/luci-app-lucky" feeds/kenzok8/luci-app-lucky
 
-# Record the temporary source revisions before cleanup for release provenance.
-printf '{"coolsnowwolf/packages (lucky)":"%s","coolsnowwolf/luci (lucky)":"%s"}\n' \
+# Merge source revisions without discarding the pinned OpenClash record.
+python3 - \
     "$(git -C "$CUSTOM_TMP/lean_packages" rev-parse HEAD)" \
-    "$(git -C "$CUSTOM_TMP/lean_luci" rev-parse HEAD)" > custom-sources.json
+    "$(git -C "$CUSTOM_TMP/lean_luci" rev-parse HEAD)" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path('custom-sources.json')
+data = json.loads(path.read_text(encoding='utf-8'))
+data.update({'coolsnowwolf/packages (lucky)': sys.argv[1],
+             'coolsnowwolf/luci (lucky)': sys.argv[2]})
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+PY
+
+LUCKY_ARCH_HELPER="feeds/kenzok8/luci-app-lucky/root/usr/bin/luckyarch"
+if [ -f "$LUCKY_ARCH_HELPER" ]; then chmod 0755 "$LUCKY_ARCH_HELPER"; fi
 
 # 每次构建重新查询官方最新稳定版，下载阶段按官方 SHA256 校验。
 python3 "$CUSTOM_SCRIPT_DIR/scripts/update_lucky.py" \
@@ -101,6 +119,16 @@ python3 "$CUSTOM_SCRIPT_DIR/scripts/update_lucky.py" \
 
 python3 "$CUSTOM_SCRIPT_DIR/scripts/update_easytier.py" \
     --source-root . --provenance custom-sources.json
+
+python3 "$CUSTOM_SCRIPT_DIR/scripts/update_adguardhome.py" \
+    --package feeds/packages/net/adguardhome \
+    --provenance custom-sources.json --download-dir dl
+
+python3 "$CUSTOM_SCRIPT_DIR/scripts/update_mosdns.py" \
+    --package-tree package/mosdns --provenance custom-sources.json
+
+python3 "$CUSTOM_SCRIPT_DIR/scripts/prepare_backup_rules.py" \
+    --openclash-package feeds/luci/applications/luci-app-openclash --files-root files
 
 # 权限修复
 AGH_MAKEFILE="feeds/luci/applications/luci-app-adguardhome/Makefile"
@@ -113,19 +141,6 @@ if [ -f "$AGH_MAKEFILE" ]; then
     sed -i '/\/etc\/init.d\/AdGuardHome enable/i \	chmod +x /etc/init.d/AdGuardHome' "$AGH_MAKEFILE"
     echo "Fixed AdGuardHome Makefile permissions."
 fi
-
-# 3. 预集成 OpenClash Meta 核心
-echo "Integrating OpenClash Meta core..."
-CORE_URL="https://raw.githubusercontent.com/vernesong/OpenClash/core/master/meta/clash-linux-amd64-v1.tar.gz"
-CORE_PATH="feeds/luci/applications/luci-app-openclash/root/etc/openclash/core"
-
-mkdir -p "$CORE_PATH"
-curl --fail --location --connect-timeout 15 --max-time 120 --retry 3 \
-    "$CORE_URL" -o "$CUSTOM_TMP/clash.tar.gz"
-tar -xzf "$CUSTOM_TMP/clash.tar.gz" -C "$CUSTOM_TMP"
-test -s "$CUSTOM_TMP/clash"
-install -m 0755 "$CUSTOM_TMP/clash" "$CORE_PATH/clash_meta"
-echo "OpenClash Meta core ready."
 
 # 4. 修改默认 IP
 find package/base-files/ -name config_generate -exec sed -i 's/192\.168\.1\.1/192.168.13.254/g' '{}' +

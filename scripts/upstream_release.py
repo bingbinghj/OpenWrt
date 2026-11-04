@@ -174,6 +174,19 @@ def component_revisions(directory):
             for path in paths if (path / ".git").exists()}
 
 
+def component_revision(value):
+    if value is None or value == "":
+        return "无记录"
+    value = str(value)
+    # Only hashes need shortening; Smart versions must retain their suffix.
+    if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value):
+        value = value[:12]
+    elif len(value) > 160:
+        value = value[:157] + "..."
+    value = html.escape(value, quote=False).replace("`", "'").replace("|", r"\|").replace("\n", " ").replace("\r", " ")
+    return "`" + value + "`"
+
+
 def component_changes(components, previous):
     old = previous[1].get("components", {}) if previous else {}
     changed = [(name, old.get(name), revision) for name, revision in sorted(components.items())
@@ -185,7 +198,7 @@ def component_changes(components, previous):
     if changed:
         lines += ["", "| 来源 | 上次记录 | 本次记录 |", "| --- | --- | --- |"]
         for name, before, after in changed:
-            lines.append(f"| {markdown(name)} | {('`' + before[:12] + '`') if before else '无记录'} | `{after[:12]}` |")
+            lines.append(f"| {markdown(name)} | {component_revision(before)} | {component_revision(after)} |")
     for name in removed:
         lines.append(f"- 本次不再记录来源：{markdown(name)}")
     if not changed and not removed:

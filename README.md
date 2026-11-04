@@ -9,8 +9,11 @@
 - 包定制后重新建立 feeds 索引再安装；下载和编译失败时各进行一次单线程详细重试。日志 artifact 保留 14 天，固件 artifact 保留 7 天。
 - `x86_64_diy-part2.sh` 在替换 OpenClash 软件包后修补其启动脚本：`del_cron()` 使用 `crontab "$CRON_FILE"` 重新加载任务，避免定时订阅更新重启 cron 时终止自身的 OpenClash 重启流程。已包含此修复的上游保持原样；文件缺失或函数不匹配会使定制阶段失败，防止静默生成未修复的固件。
 - 每次构建都会重新查询 Lucky、EasyTier 官方 GitHub 的最新稳定 Release，选取 Linux x86-64 核心，把官方 SHA256 写入 OpenWrt 下载配方；获取版本、资产或校验失败时停止构建，不回退旧核心。Lucky 使用官方普通版；EasyTier 保留 LuCI 插件，预装静态 `easytier-core` 和供插件查询状态使用的同版本 CLI，关闭 `EASYTIER_INCLUDE_WEBCONSOLE`，不安装独立 Web 控制台。配置只选入一份 `easytier` 核心包。
-- 本次构建确定的 Lucky、EasyTier Release 标签和归档 SHA256 会写入 `custom-sources.json`，并出现在发布附件 `build-info.json` 的组件记录中。下次构建重新查询最新稳定版本，当前编译过程中保持已选版本和哈希一致。
-- 保留配置升级时，请避免在自定义保留列表加入整个 `/etc` 或 `/etc/init.d/openclash`、`/etc/init.d/mosdns`；旧启动脚本可能覆盖新固件的修复。按默认规则保留设置，并补充实际插件数据目录，例如 `/etc/lucky/`、`/etc/AdGuardHome.yaml`、`/etc/AdGuardHome/` 和自定义 MosDNS YAML。构建仅修改打包源文件，不增加升级后恢复脚本的机制。
+- OpenClash 插件和 Smart 核心按 `master` 通道“检查更新”使用的版本清单查询，固定插件源码、清单与核心的 Git SHA，并校验核心 Git blob 和 SHA256；新装默认选用 Smart。Smart 是该通道的最新测试版，不将其描述为稳定 Meta。源码版本与清单不符时，仅允许匹配清单版本的官方标签，无法匹配则停止构建。
+- AdGuard Home 每次查询官方最新稳定 Release，固定标签源码与官方前端的哈希，保持 Go 源码编译。MosDNS 每次核对官方基础版本与 sbwml 最新稳定 Release，锁定源码 SHA 并验证 `stats_api` 补丁存在；基础版本不兼容时停止构建，保留统计功能。
+- 每个组件的版本、Git SHA 和归档 SHA256 会合并写入 `custom-sources.json`，并出现在发布附件 `build-info.json` 中。每次构建重新查询最新版本，当前构建使用已选的确切版本和哈希。基础固件和其他软件包继续跟随配置的 ImmortalWrt 分支与 feeds。
+- OpenClash 的 conffiles、keep.d 及插件升级的临时备份/恢复只保留配置、订阅、覆写、规则、历史、GeoDB 和模型数据，排除 `core/` 和根目录 `clash` 链接。推荐额外备份路径只有 `/etc/lucky/`、`/etc/AdGuardHome.yaml`、`/etc/AdGuardHome/data/` 和自定义 MosDNS YAML，避免带入 AGH 的旧核心备份目录。
+- **首次使用此修改升级前**，需要先同步旧设备的保留清单，用 `sysupgrade -l` 确认核心不在备份中；新固件不能改变旧设备在升级前已生成的备份。自定义列表中的整个 `/etc`、`/usr/bin`、`/etc/openclash`、`/etc/AdGuardHome` 仍会扩大保留范围，应改成数据路径。构建不会增加升级后恢复启动脚本的机制。
 - 只有成功生成固件镜像才会发布。先上传至草稿 Release，再公开；之后保留最近 3 个由新脚本管理的正式固件 Release。旧版、手工发布、预发布和草稿不参与自动清理，Git 标签保留。
 
 ## Release 会写明什么

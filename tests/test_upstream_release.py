@@ -121,6 +121,15 @@ class BaselineTests(unittest.TestCase):
 
 
 class ChangelogTests(unittest.TestCase):
+    def test_component_versions_are_complete_and_hashes_are_shortened(self):
+        smart = "alpha-smart-gdaf3ad0"
+        rows = "\n".join(release.component_changes(
+            {"Smart version": smart, "AGH version": "v0.107.80", "source sha": "a" * 40}, None))
+        self.assertIn("`" + smart + "`", rows)
+        self.assertIn("`v0.107.80`", rows)
+        self.assertIn("`" + "a" * 12 + "`", rows)
+        self.assertNotIn("`" + "a" * 40 + "`", rows)
+
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)

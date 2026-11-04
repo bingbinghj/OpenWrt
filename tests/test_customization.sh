@@ -4,18 +4,22 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 FIXTURE=$(mktemp -d)
 trap 'rm -rf -- "$FIXTURE"' EXIT
-mkdir -p "$FIXTURE/bin" "$FIXTURE/archive"
-printf 'fixture core\n' > "$FIXTURE/archive/clash"
-tar -czf "$FIXTURE/core.tar.gz" -C "$FIXTURE/archive" clash
+mkdir -p "$FIXTURE/bin"
 export FIXTURE ROOT
 CUSTOM_REAL_PYTHON=$(command -v python3)
-export CUSTOM_REAL_PYTHON
+CUSTOM_REAL_GIT=$(command -v git)
+CUSTOM_FIXTURE_NATIVE=$FIXTURE
+if command -v cygpath >/dev/null 2>&1; then
+    CUSTOM_REAL_GIT=$(cygpath -m "$CUSTOM_REAL_GIT")
+    CUSTOM_FIXTURE_NATIVE=$(cygpath -m "$FIXTURE")
+fi
+export CUSTOM_REAL_PYTHON CUSTOM_REAL_GIT CUSTOM_FIXTURE_NATIVE
 
 cat > "$FIXTURE/bin/python3" <<'MOCK'
 #!/bin/bash
 set -eu
 case "${1:-}" in
-    */scripts/update_lucky.py|*/scripts/update_easytier.py)
+    */scripts/update_lucky.py|*/scripts/update_easytier.py|*/scripts/update_adguardhome.py|*/scripts/update_mosdns.py|*/scripts/update_openclash.py)
         exec "$CUSTOM_REAL_PYTHON" "$ROOT/tests/mock_release_build.py" run "$@" ;;
     *) exec "$CUSTOM_REAL_PYTHON" "$@" ;;
 esac
@@ -24,7 +28,14 @@ MOCK
 cat > "$FIXTURE/bin/git" <<'MOCK'
 #!/bin/bash
 set -eu
-if [[ "$1" == '-C' ]]; then printf '%040d\n' 1; exit 0; fi
+if [[ "$1" == '-C' ]]; then
+    if [[ -f "$2/.git/offline-release-commit" ]]; then
+        [[ "$3" != fetch && "$3" != pull && "$3" != push ]] || exit 98
+        exec "$CUSTOM_REAL_GIT" "$@"
+    fi
+    printf '%040d\n' 1; exit 0
+fi
+[[ "$1" == clone ]] || exit 97
 destination="${@: -1}"
 if [[ "$*" == *packages_lang_golang* ]]; then
     [[ "${FAIL_CLONE:-0}" == 0 ]] || exit 31
@@ -34,17 +45,18 @@ mkdir -p "$destination"
 if [[ "$*" == *coolsnowwolf/packages* ]]; then
     python3 "$ROOT/tests/mock_release_build.py" prepare-lucky "$destination/net/lucky"
 fi
-if [[ "$*" == *coolsnowwolf/luci* ]]; then mkdir -p "$destination/applications/luci-app-lucky"; fi
+if [[ "$*" == *coolsnowwolf/luci* ]]; then
+    python3 "$ROOT/tests/mock_release_build.py" prepare-lucky-ui "$destination/applications/luci-app-lucky"
+fi
+if [[ "$*" == *sbwml/luci-app-mosdns* ]]; then
+    python3 "$ROOT/tests/mock_release_build.py" prepare-mosdns "$destination"
+fi
 MOCK
 cat > "$FIXTURE/bin/curl" <<'MOCK'
 #!/bin/bash
 set -eu
-[[ "${FAIL_DOWNLOAD:-0}" == 0 ]] || exit 22
-while [[ $# -gt 0 ]]; do
-    if [[ "$1" == '-o' ]]; then cp "$FIXTURE/core.tar.gz" "$2"; exit 0; fi
-    shift
-done
-exit 1
+echo 'Unexpected curl call in the offline customization test' >&2
+exit 99
 MOCK
 chmod +x "$FIXTURE/bin/git" "$FIXTURE/bin/curl" "$FIXTURE/bin/python3"
 export PATH="$FIXTURE/bin:$PATH"
@@ -55,7 +67,7 @@ prepare() {
     mkdir -p feeds/packages/net feeds/packages/lang feeds/kenzok8/adguardhome \
         feeds/kenzok8/luci-app-adguardhome feeds/kenzok8/luci-app-openclash \
         feeds/luci/applications feeds/luci/collections/luci-light \
-        feeds/luci/collections/luci-nginx package/base-files
+        feeds/luci/collections/luci-nginx package/base-files files/etc
     mkdir -p feeds/kenzok8/luci-app-openclash/root/etc/init.d
     cat > feeds/kenzok8/luci-app-openclash/root/etc/init.d/openclash <<'INIT'
 #!/bin/sh
@@ -72,6 +84,7 @@ del_cron()
 INIT
     chmod 755 feeds/kenzok8/luci-app-openclash/root/etc/init.d/openclash
     python3 "$ROOT/tests/mock_release_build.py" prepare-packages feeds/kenzok8
+    printf '/etc/openclash/\n/etc/AdGuardHome/\n/usr/bin/AdGuardHome\n/usr/bin/lucky\n/usr/bin/mosdns\n' > files/etc/sysupgrade.conf
     printf 'src-git packages https://example.invalid/packages\n' > feeds.conf.default
     printf 'luci-theme-bootstrap\n' > feeds/luci/collections/luci-light/Makefile
     printf 'luci-theme-bootstrap\n' > feeds/luci/collections/luci-nginx/Makefile
@@ -111,6 +124,8 @@ grep -q '^PKG_VERSION:=2.6.4$' feeds/kenzok8/easytier/Makefile
 grep -q 'gdy666/lucky (release)' custom-sources.json
 grep -q 'EasyTier/EasyTier (release)' custom-sources.json
 test -s dl/easytier-linux-x86_64-v2.6.4.zip
+test -x feeds/kenzok8/luci-app-lucky/root/usr/bin/luckyarch
+python3 "$ROOT/tests/mock_release_build.py" verify-build .
 ! grep -qF '$(eval $(call BuildPackage,luci-app-adguardhome))' feeds/luci/applications/luci-app-adguardhome/Makefile
 grep -q '192.168.13.254' package/base-files/config_generate
 
@@ -140,7 +155,7 @@ rm feeds/kenzok8/luci-app-openclash/root/etc/init.d/openclash
 if bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/missing-init.log" 2>&1; then
     echo 'Missing OpenClash init was ignored' >&2; exit 1
 fi
-grep -q 'Missing OpenClash init script' "$FIXTURE/missing-init.log"
+grep -Eq 'incomplete|Missing OpenClash init script' "$FIXTURE/missing-init.log"
 
 prepare "$FIXTURE/incompatible-init"
 sed -i 's@/etc/init.d/cron restart$@/etc/init.d/cron restart >/dev/null@' feeds/kenzok8/luci-app-openclash/root/etc/init.d/openclash
@@ -167,7 +182,8 @@ prepare "$FIXTURE/download-failure"
 if FAIL_DOWNLOAD=1 bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/download.log" 2>&1; then
     echo 'Download failure was ignored' >&2; exit 1
 fi
-! grep -q 'OpenClash Meta core ready' "$FIXTURE/download.log"
+grep -q 'simulated archive download failure' "$FIXTURE/download.log"
+! grep -q 'All tasks completed' "$FIXTURE/download.log"
 
 prepare "$FIXTURE/release-failure"
 if FAIL_RELEASE=1 bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/release.log" 2>&1; then
@@ -175,4 +191,21 @@ if FAIL_RELEASE=1 bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/release.log" 2>&1
 fi
 grep -q 'refusing an old-core fallback' "$FIXTURE/release.log"
 ! grep -q 'All tasks completed' "$FIXTURE/release.log"
-echo 'Customization integration checks passed (cron reload, stable Lucky/EasyTier, incompatible init and clone/download/API failures).'
+for helper in update_lucky.py update_easytier.py update_adguardhome.py update_mosdns.py; do
+    prepare "$FIXTURE/release-failure-$helper"
+    if FAIL_RELEASE=1 FAIL_HELPER="$helper" bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/release-$helper.log" 2>&1; then
+        echo "Latest release failure was ignored by $helper" >&2; exit 1
+    fi
+    grep -q 'simulated latest release API failure' "$FIXTURE/release-$helper.log"
+    ! grep -q 'All tasks completed' "$FIXTURE/release-$helper.log"
+done
+
+prepare "$FIXTURE/unknown-backup"
+sed -i 's@^/etc/openclash/$@/etc/openclash/core/@' feeds/kenzok8/luci-app-openclash/root/etc/uci-defaults/luci-openclash
+if bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/unknown-backup.log" 2>&1; then
+    echo 'Unknown package backup recipe was ignored' >&2; exit 1
+fi
+grep -q 'Unknown OpenClash' "$FIXTURE/unknown-backup.log"
+! grep -q 'All tasks completed' "$FIXTURE/unknown-backup.log"
+
+echo 'Customization integration checks passed (all release helpers, Smart, stats API, cron, data-only backups and transport/recipe failures).'

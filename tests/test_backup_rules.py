@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -138,8 +139,8 @@ class BackupRulesTests(unittest.TestCase):
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(data)
         code = self.defaults.read_text()
-        for prefix in ("/etc/", "/tmp/", "/lib/"):
-            code = code.replace(prefix, fsroot.as_posix() + prefix)
+        # Substitute once: Linux's fixture root itself starts with /tmp/.
+        code = re.sub(r"/(?:etc|tmp|lib)/", lambda match: fsroot.as_posix() + match[0], code)
         script = self.root / "run-defaults.sh"
         script.write_bytes((code + "\nexit 0\n").encode())
         result = subprocess.run([bash, script.as_posix()], capture_output=True, text=True)

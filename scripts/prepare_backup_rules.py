@@ -141,6 +141,7 @@ def patch_sysupgrade(text: str) -> str:
                                    "/usr/bin/easytier-web")
               or path.startswith("/etc/openclash/core/")
               or path.rstrip("/") == "/etc/openclash/core"
+              or path.rstrip("/") == "/etc/AdGuardHome/agh-backup"
               or path.startswith("/etc/AdGuardHome/agh-backup/")):
             continue
         elif path.startswith(("/etc/openclash/", "/etc/AdGuardHome/")) and any(

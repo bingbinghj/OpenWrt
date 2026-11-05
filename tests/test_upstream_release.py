@@ -1,13 +1,14 @@
 import argparse
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
-from urllib.error import HTTPError
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError, URLError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +119,213 @@ class BaselineTests(unittest.TestCase):
         self.assertTrue(all(x[1] == {"method": "DELETE"} for x in calls))
         with self.assertRaises(ValueError):
             release.prune("me/repo", releases, 3, "unpublished", lambda *a, **kw: self.fail("Unexpected deletion"))
+
+
+class DispatchTests(unittest.TestCase):
+    repository = "me/repo"
+    commit = "a" * 40
+
+    def trigger(self, api, sleep=None, **kwargs):
+        return release.trigger_build(self.repository, "main", self.commit,
+                                     api=api, sleep=sleep or Mock(), **kwargs)
+
+    def test_502_retries_only_after_checking_for_an_accepted_run(self):
+        calls = []
+        failure = HTTPError("https://api.github.com/dispatches", 502, "Bad Gateway", {}, None)
+        posts = []
+
+        def api(path, method="GET", body=None):
+            calls.append((method, path, body))
+            if method == "GET":
+                return {"workflow_runs": []}
+            posts.append(body)
+            if len(posts) == 1:
+                raise failure
+            return None
+
+        sleep = Mock()
+        self.assertTrue(self.trigger(api, sleep))
+        self.assertEqual(posts, [{"ref": "main", "inputs": {"upstream_commit": self.commit}}] * 2)
+        post_positions = [i for i, call in enumerate(calls) if call[0] == "POST"]
+        self.assertTrue(any(call[0] == "GET" for call in calls[post_positions[0] + 1:post_positions[1]]))
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 10])
+        self.assertTrue(all(call[1].endswith("/actions/workflows/x86_64.yml/dispatches")
+                            for call in calls if call[0] == "POST"))
+
+    def test_502_that_created_a_queued_run_does_not_dispatch_twice(self):
+        posts = []
+
+        def api(path, method="GET", body=None):
+            if method == "GET":
+                return {"workflow_runs": [{"status": "queued"}]} if posts else {"workflow_runs": []}
+            posts.append(body)
+            raise HTTPError(path, 502, "Bad Gateway", {}, None)
+
+        sleep = Mock()
+        self.assertFalse(self.trigger(api, sleep))
+        self.assertEqual(len(posts), 1)
+        sleep.assert_called_once_with(5)
+
+    def test_an_existing_active_run_defers_without_posting(self):
+        api = Mock(return_value={"workflow_runs": [{"status": "in_progress"}]})
+        sleep = Mock()
+        self.assertFalse(self.trigger(api, sleep))
+        self.assertEqual(api.call_count, 1)
+        self.assertNotEqual(api.call_args.kwargs.get("method"), "POST")
+        sleep.assert_not_called()
+
+    def test_authentication_failure_is_not_retried(self):
+        for status in (401, 403):
+            with self.subTest(status=status):
+                error = HTTPError("https://api.github.com/dispatches", status, "Forbidden", {}, None)
+                calls = []
+
+                def api(path, method="GET", body=None):
+                    calls.append(method)
+                    if method == "GET":
+                        return {"workflow_runs": []}
+                    raise error
+
+                sleep = Mock()
+                with self.assertRaises(HTTPError) as result:
+                    self.trigger(api, sleep)
+                self.assertIs(result.exception, error)
+                self.assertEqual(calls, ["GET", "POST"])
+                sleep.assert_not_called()
+
+    def test_failure_to_read_active_runs_never_sends_a_post(self):
+        error = HTTPError("https://api.github.com/runs", 503, "Unavailable", {}, None)
+        api = Mock(side_effect=error)
+        sleep = Mock()
+        with self.assertRaises(HTTPError) as result:
+            self.trigger(api, sleep)
+        self.assertIs(result.exception, error)
+        self.assertEqual(api.call_count, 1)
+        self.assertNotEqual(api.call_args.kwargs.get("method"), "POST")
+        sleep.assert_not_called()
+
+    def test_exhaustion_observes_after_the_last_post_then_raises_that_error(self):
+        calls = []
+        errors = [HTTPError("https://api.github.com/dispatches", 502, "Bad Gateway", {}, None)
+                  for _ in range(3)]
+        posts = []
+
+        def api(path, method="GET", body=None):
+            calls.append(method)
+            if method == "GET":
+                return {"workflow_runs": []}
+            error = errors[len(posts)]
+            posts.append(body)
+            raise error
+
+        sleep = Mock()
+        with self.assertRaises(HTTPError) as result:
+            self.trigger(api, sleep)
+        self.assertIs(result.exception, errors[-1])
+        self.assertEqual(len(posts), 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 10] * 3)
+        last_post = len(calls) - 1 - calls[::-1].index("POST")
+        self.assertGreaterEqual(calls[last_post + 1:].count("GET"), 2)
+
+    def test_network_dispatch_failures_receive_the_same_duplicate_guard(self):
+        for error in (URLError("connection reset"), TimeoutError("dispatch timed out")):
+            with self.subTest(error=type(error).__name__):
+                posts = []
+
+                def api(path, method="GET", body=None):
+                    if method == "GET":
+                        return {"workflow_runs": [{"status": "queued"}]} if posts else {"workflow_runs": []}
+                    posts.append(body)
+                    raise error
+
+                self.assertFalse(self.trigger(api))
+                self.assertEqual(len(posts), 1)
+
+    def test_active_run_on_a_later_page_is_not_missed(self):
+        pages = [{"workflow_runs": [{"status": "completed"} for _ in range(100)]},
+                 {"workflow_runs": [{"status": "queued"}]}]
+        calls = []
+
+        def api(path):
+            calls.append(path)
+            return pages[len(calls) - 1]
+
+        self.assertTrue(release.active_build(self.repository, api=api))
+        self.assertEqual(len(calls), 2)
+        self.assertIn("per_page=100", calls[0])
+        self.assertIn("page=2", calls[1])
+
+    def test_malformed_run_responses_are_not_treated_as_an_idle_queue(self):
+        for payload in (None, [], {}, {"workflow_runs": None}, {"workflow_runs": {}},
+                        {"workflow_runs": [None]}, {"workflow_runs": [{}]},
+                        {"workflow_runs": [{"status": None}]}, {"workflow_runs": [{"status": 7}]}):
+            with self.subTest(payload=payload):
+                api = Mock(return_value=payload)
+                with self.assertRaises(ValueError):
+                    release.active_build(self.repository, api=api)
+                self.assertEqual(api.call_count, 1)
+
+    def test_invalid_sha_or_missing_ref_is_rejected_before_api_access(self):
+        for ref, commit in (("main", "--help"), ("main", "a" * 39),
+                            ("main", "a" * 40 + "\n"), ("", self.commit), ("  ", self.commit)):
+            with self.subTest(ref=ref, commit=commit):
+                api = Mock(side_effect=AssertionError("Unexpected API call"))
+                sleep = Mock()
+                with self.assertRaises(ValueError):
+                    release.trigger_build(self.repository, ref, commit, api=api, sleep=sleep)
+                api.assert_not_called()
+                sleep.assert_not_called()
+
+    def test_dispatch_cli_bypasses_release_baseline_and_reads_shared_inputs(self):
+        environment = {"WORKFLOW_REF": "main", "UPSTREAM_COMMIT": self.commit}
+        with patch.dict(os.environ, environment), \
+                patch.object(release, "published_releases", side_effect=AssertionError("Unexpected baseline read")), \
+                patch.object(release, "trigger_build", return_value=True) as trigger, \
+                patch("sys.argv", ["upstream_release.py", "dispatch", "--repository", self.repository]):
+            release.main()
+        trigger.assert_called_once_with(self.repository, "main", self.commit)
+
+
+class GithubRequestTests(unittest.TestCase):
+    @staticmethod
+    def response(status=204, body=b""):
+        response = io.BytesIO(body)
+        response.status = status
+        return response
+
+    def test_dispatch_post_sends_json_once_without_implicit_retries(self):
+        body = {"ref": "main", "inputs": {"upstream_commit": "a" * 40}}
+        error = HTTPError("https://api.github.com/dispatches", 502, "Bad Gateway", {}, None)
+        with patch.object(release, "urlopen", side_effect=error) as request, \
+                patch.object(release.time, "sleep") as sleep:
+            with self.assertRaises(HTTPError) as result:
+                release.github("repos/me/repo/actions/workflows/x86_64.yml/dispatches", method="POST", body=body)
+        self.assertIs(result.exception, error)
+        request.assert_called_once()
+        wire = request.call_args.args[0]
+        self.assertEqual(wire.method, "POST")
+        self.assertEqual(wire.get_header("Content-type"), "application/json")
+        self.assertEqual(json.loads(wire.data), body)
+        sleep.assert_not_called()
+
+    def test_successful_post_accepts_204_without_parsing_empty_json(self):
+        with patch.object(release, "urlopen", return_value=self.response()) as request:
+            self.assertIsNone(release.github("repos/me/repo/actions/workflows/x86_64.yml/dispatches",
+                                            method="POST", body={"ref": "main"}))
+        request.assert_called_once()
+
+    def test_get_and_delete_retry_transient_failures_with_bounded_attempts(self):
+        for method in ("GET", "DELETE"):
+            with self.subTest(method=method):
+                errors = [HTTPError("https://api.github.com/resource", code, "Unavailable", {}, None)
+                          for code in (502, 503)]
+                response = self.response(200, b'{"ok": true}') if method == "GET" else self.response()
+                with patch.object(release, "urlopen", side_effect=[*errors, response]) as request, \
+                        patch.object(release.time, "sleep") as sleep:
+                    value = release.github("repos/me/repo/releases/1", method=method)
+                self.assertEqual(value, {"ok": True} if method == "GET" else None)
+                self.assertEqual(request.call_count, 3)
+                self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
 
 
 class ChangelogTests(unittest.TestCase):

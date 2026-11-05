@@ -20,23 +20,82 @@ SHA = re.compile(r"[0-9a-f]{40}")
 CATEGORIES = ("新增功能与支持", "问题修复", "版本升级与功能调整", "其他变更")
 
 
-def github(path, method="GET"):
+def github(path, method="GET", body=None):
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "immortalwrt-build"}
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = Request(f"https://api.github.com/{path}", headers=headers, method=method)
-    for attempt in range(3):
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode("utf-8")
+    request = Request(f"https://api.github.com/{path}", headers=headers, method=method, data=data)
+    # A dispatch can be accepted before a gateway error reaches us. Its caller
+    # must observe queued builds before retrying, rather than blindly repeating POST.
+    attempts = 1 if method == "POST" else 3
+    for attempt in range(attempts):
         try:
             with urlopen(request, timeout=30) as response:
                 return json.load(response) if response.status != 204 else None
         except HTTPError as error:
-            if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
+            if error.code not in (429, 500, 502, 503, 504) or attempt == attempts - 1:
                 raise
         except (URLError, TimeoutError):
-            if attempt == 2:
+            if attempt == attempts - 1:
                 raise
         time.sleep(2 ** attempt)
+
+
+def active_build(repository, api=github):
+    page = 1
+    while True:
+        result = api(f"repos/{repository}/actions/workflows/x86_64.yml/runs?per_page=100&page={page}")
+        runs = result.get("workflow_runs") if isinstance(result, dict) else None
+        if not isinstance(runs, list) or any(
+                not isinstance(run, dict) or not isinstance(run.get("status"), str)
+                for run in runs):
+            raise ValueError("GitHub returned an invalid workflow run list; refusing to dispatch")
+        if any(run["status"] != "completed" for run in runs):
+            return True
+        if len(runs) < 100:
+            return False
+        page += 1
+
+
+def trigger_build(repository, ref, commit, api=github, sleep=time.sleep, attempts=3):
+    if not isinstance(commit, str) or not SHA.fullmatch(commit):
+        raise ValueError("Invalid upstream commit for workflow dispatch")
+    if not isinstance(ref, str) or not ref.strip():
+        raise ValueError("A workflow ref is required")
+    if not 1 <= attempts <= 3:
+        raise ValueError("Workflow dispatch permits one to three attempts")
+    path = f"repos/{repository}/actions/workflows/x86_64.yml/dispatches"
+    for attempt in range(1, attempts + 1):
+        if active_build(repository, api):
+            print("An existing firmware build is active; defer until the next check.")
+            return False
+        try:
+            api(path, method="POST", body={"ref": ref, "inputs": {"upstream_commit": commit}})
+            print(f"Firmware build dispatched for upstream commit {commit}.")
+            return True
+        except HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504):
+                raise
+            failure = error
+            reason = f"HTTP {error.code}"
+        except (URLError, TimeoutError) as error:
+            failure = error
+            reason = "network timeout or connection failure"
+        print(f"Dispatch attempt {attempt}/{attempts} failed ({reason}); checking for an accepted build.")
+        # Allow eventually visible queued runs to appear, including after the last
+        # failed request. Read failures remain fatal; they never mean 'idle'.
+        for delay in (5, 10):
+            sleep(delay)
+            if active_build(repository, api):
+                print("A firmware build appeared after the failed dispatch; do not dispatch again.")
+                return False
+        if attempt == attempts:
+            raise failure
 
 
 def release_metadata(release, upstream, branch, target):
@@ -255,7 +314,7 @@ def prune(repository, releases, keep, current_tag, api=github):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "notes", "prune"))
+    parser.add_argument("command", choices=("check", "notes", "prune", "dispatch"))
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY"), required=not os.environ.get("GITHUB_REPOSITORY"))
     parser.add_argument("--upstream", default=os.environ.get("UPSTREAM_REPOSITORY", "immortalwrt/immortalwrt"))
     parser.add_argument("--branch", default=os.environ.get("REPO_BRANCH", "master"))
@@ -265,7 +324,12 @@ def main():
     parser.add_argument("--metadata", default="build-info.json")
     parser.add_argument("--keep", type=int, default=3)
     parser.add_argument("--current-tag")
+    parser.add_argument("--ref", default=os.environ.get("WORKFLOW_REF"))
+    parser.add_argument("--upstream-commit", default=os.environ.get("UPSTREAM_COMMIT"))
     args = parser.parse_args()
+    if args.command == "dispatch":
+        trigger_build(args.repository, args.ref, args.upstream_commit)
+        return
     releases = published_releases(args.repository, args.upstream, args.branch, args.target)
     previous = releases[0] if releases else None
     if args.command == "notes":

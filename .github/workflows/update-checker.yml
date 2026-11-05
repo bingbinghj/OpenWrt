@@ -30,6 +30,9 @@ jobs:
       - name: Load shared upstream settings
         run: cat .github/upstream.env >> "$GITHUB_ENV"
 
+      - name: Validate update checker
+        run: python3 -m unittest discover -s tests -p test_upstream_release.py -v
+
       - name: Compare with last published firmware
         id: upstream
         # A failed build never advances the baseline; the next check retries it.
@@ -40,12 +43,4 @@ jobs:
         env:
           UPSTREAM_COMMIT: ${{ steps.upstream.outputs.upstream_commit }}
           WORKFLOW_REF: ${{ github.event.repository.default_branch }}
-        run: |
-          active=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow x86_64.yml \
-            --limit 100 --json status --jq '[.[] | select(.status != "completed")] | length')
-          if [[ "$active" != 0 ]]; then
-            echo 'An existing firmware build is active; defer until the next check.'
-            exit 0
-          fi
-          gh workflow run x86_64.yml --repo "$GITHUB_REPOSITORY" --ref "$WORKFLOW_REF" \
-            -f "upstream_commit=$UPSTREAM_COMMIT"
+        run: python3 scripts/upstream_release.py dispatch

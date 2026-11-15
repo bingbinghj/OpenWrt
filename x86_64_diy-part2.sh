@@ -9,6 +9,11 @@ trap 'echo "::error file=x86_64_diy-part2.sh,line=$LINENO::Package customization
 
 printf '{}\n' > custom-sources.json
 
+# Keep the FullCone defaults patch compatible with firewall4's removed fw3
+# comments. Only refresh the known defaults hunk; retain the feature patches.
+python3 "$CUSTOM_SCRIPT_DIR/scripts/fix_firewall4_patch.py" \
+    --patch package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
+
 # 1. 定义软件包替换函数
 replace_package() {
     local src=$1

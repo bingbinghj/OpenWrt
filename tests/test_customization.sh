@@ -69,6 +69,9 @@ prepare() {
         feeds/luci/applications feeds/luci/collections/luci-light \
         feeds/luci/collections/luci-nginx package/base-files files/etc
     mkdir -p feeds/kenzok8/luci-app-openclash/root/etc/init.d
+    mkdir -p package/network/config/firewall4/patches
+    cp "$ROOT/tests/fixtures/firewall4-fullcone-defaults.patch" \
+        package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
     cat > feeds/kenzok8/luci-app-openclash/root/etc/init.d/openclash <<'INIT'
 #!/bin/sh
 # This unrelated service restart must remain untouched by the build fix.
@@ -102,6 +105,8 @@ bash "$ROOT/x86_64_diy-part1.sh"
 cp feeds/kenzok8/luci-app-openclash/root/etc/init.d/openclash "$FIXTURE/expected-init"
 sed -i '/^del_cron()/,/^}/s@/etc/init.d/cron restart@crontab "$CRON_FILE"@' "$FIXTURE/expected-init"
 bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/success.log" 2>&1
+FIREWALL4_PATCH=package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
+grep -q '^@@ -1,5 +1,9 @@ config defaults$' "$FIREWALL4_PATCH"
 OPENCLASH_INIT=feeds/luci/applications/luci-app-openclash/root/etc/init.d/openclash
 cmp "$FIXTURE/expected-init" "$OPENCLASH_INIT"
 test -x "$OPENCLASH_INIT"
@@ -208,4 +213,13 @@ fi
 grep -q 'Unknown OpenClash' "$FIXTURE/unknown-backup.log"
 ! grep -q 'All tasks completed' "$FIXTURE/unknown-backup.log"
 
-echo 'Customization integration checks passed (all release helpers, Smart, stats API, cron, data-only backups and transport/recipe failures).'
+prepare "$FIXTURE/unknown-firewall4"
+sed -i 's/option forward.*REJECT/option forward ACCEPT/' \
+    package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
+if bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/firewall4.log" 2>&1; then
+    echo 'Unknown firewall4 patch context was ignored' >&2; exit 1
+fi
+grep -q 'upstream patch needs review' "$FIXTURE/firewall4.log"
+! grep -q 'All tasks completed' "$FIXTURE/firewall4.log"
+
+echo 'Customization integration checks passed (all release helpers, firewall4 context, Smart, stats API, cron, data-only backups and transport/recipe failures).'

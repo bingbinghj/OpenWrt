@@ -61,6 +61,7 @@ TAIL = b"""--- a/root/usr/share/firewall4/templates/ruleset.uc
 """
 ORIGINAL = HEADER + OLD_HUNK + TAIL
 UPDATED = HEADER + STABLE_HUNK + TAIL
+UPSTREAM = (MODULE.parent.parent / "tests/fixtures/firewall4-fullcone-refreshed.patch").read_bytes() + TAIL
 
 # This default block is from firewall4 3722eadc088c3ab81389596ca9796112b436583a.
 NEW_DEFAULTS = """config defaults
@@ -146,6 +147,36 @@ class Firewall4PatchTests(unittest.TestCase):
         self.write_patch(UPDATED)
         self.assertFalse(firewall4.refresh_patch(self.patch_path))
         self.assertEqual(self.patch_path.read_bytes(), UPDATED)
+
+    def test_immortalwrt_upstream_refresh_is_preserved_including_crlf(self):
+        for data in (UPSTREAM, UPSTREAM.replace(b"\n", b"\r\n")):
+            with self.subTest(crlf=b"\r\n" in data):
+                self.write_patch(data)
+                self.assertFalse(firewall4.refresh_patch(self.patch_path))
+                self.assertEqual(self.patch_path.read_bytes(), data)
+
+    @unittest.skipUnless(PATCH_PROGRAM, "GNU patch is required for the regression fixture")
+    def test_immortalwrt_upstream_refresh_applies_without_local_changes(self):
+        self.write_patch(UPSTREAM)
+        self.assertFalse(firewall4.refresh_patch(self.patch_path))
+        result, defaults = self.apply_config(self.patch_path.read_bytes(), NEW_DEFAULTS)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_default_options(defaults)
+
+    def test_cli_accepts_immortalwrt_upstream_refresh(self):
+        self.write_patch(UPSTREAM)
+        result = subprocess.run([sys.executable, str(MODULE), "--patch", str(self.patch_path)],
+                                capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.patch_path.read_bytes(), UPSTREAM)
+
+    def test_future_upstream_context_without_obsolete_comments_is_not_rewritten(self):
+        updated = UPSTREAM.replace(b"@@ -3,6 +3,10 @@ config defaults",
+                                   b"@@ -3,6 +3,10 @@ refreshed defaults section", 1)
+        self.assertNotEqual(updated, UPSTREAM)
+        self.write_patch(updated)
+        self.assertFalse(firewall4.refresh_patch(self.patch_path))
+        self.assertEqual(self.patch_path.read_bytes(), updated)
 
     def test_crlf_and_later_file_diffs_are_preserved(self):
         original = ORIGINAL.replace(b"\n", b"\r\n")

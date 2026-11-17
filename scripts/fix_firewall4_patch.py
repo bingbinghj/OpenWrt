@@ -47,10 +47,16 @@ def refresh_patch(path: Path) -> bool:
     hunk = data[start:end]
     newline = b"\r\n" if headers[0].group().endswith(b"\r\n") else b"\n"
     stable = STABLE_HUNK.replace(b"\n", newline)
-    if hunk == stable:
-        return False
     if hunk != LEGACY_HUNK.replace(b"\n", newline):
-        raise ValueError("Unknown firewall defaults hunk; upstream patch needs review")
+        # This workaround only owns the deleted fw3-comment context. Upstream
+        # 2fe3065 and later refreshes must pass unchanged to the normal package
+        # patch stage, rather than being rejected for using a different hunk.
+        normalized = hunk.replace(b"\r\n", b"\n")
+        obsolete = (b" # Uncomment this line to disable ipv6 rules\n",
+                    b" #\toption disable_ipv6\t1\n")
+        if any(line in normalized for line in obsolete):
+            raise ValueError("Unknown firewall defaults hunk; upstream patch needs review")
+        return False
     path.write_bytes(data[:start] + stable + data[end:])
     return True
 

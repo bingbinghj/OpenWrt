@@ -213,6 +213,14 @@ fi
 grep -q 'Unknown OpenClash' "$FIXTURE/unknown-backup.log"
 ! grep -q 'All tasks completed' "$FIXTURE/unknown-backup.log"
 
+prepare "$FIXTURE/upstream-fixed-firewall4"
+cp "$ROOT/tests/fixtures/firewall4-fullcone-refreshed.patch" \
+    package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
+bash "$ROOT/x86_64_diy-part2.sh" > "$FIXTURE/upstream-fixed-firewall4.log" 2>&1
+cmp "$ROOT/tests/fixtures/firewall4-fullcone-refreshed.patch" \
+    package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
+grep -q 'defaults context already compatible' "$FIXTURE/upstream-fixed-firewall4.log"
+
 prepare "$FIXTURE/unknown-firewall4"
 sed -i 's/option forward.*REJECT/option forward ACCEPT/' \
     package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
